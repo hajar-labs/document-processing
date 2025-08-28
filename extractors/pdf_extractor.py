@@ -1,6 +1,6 @@
 # PDF processing (PyPDF2, pdfplumber, pdfminer)
 """
-High-performance PDF text extraction with OCR fallback and advanced formatting preservation.
+PDF text extraction with OCR fallback and formatting preservation.
 Handles complex layouts, multilingual content (French/Arabic), and scanned documents.
 """
 
