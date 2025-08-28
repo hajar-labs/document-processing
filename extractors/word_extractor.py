@@ -1,7 +1,7 @@
 # Word documents (.docx, .doc)
 # Word document processing (python-docx, python-docx2txt)
 """
-Advanced Word document text extraction with support for complex formatting,
+Word document text extraction with support for complex formatting,
 tables, images, and multilingual content (French/Arabic).
 """
 
