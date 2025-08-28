@@ -46,7 +46,7 @@ class TableInfo:
 
 class PDFExtractor(BaseExtractor):
     """
-    Advanced PDF text extractor with intelligent text/OCR hybrid approach.
+    PDF text extractor with intelligent text/OCR hybrid approach.
     Optimized for government documents with complex layouts and multilingual content.
     """
     
