@@ -14,7 +14,7 @@ from sklearn.cluster import KMeans
 import scipy.ndimage as ndimage
 from skimage import filters, morphology, segmentation
 from skimage.transform import rotate
-from skimage.filters import threshold_otsu, threshold_adaptive
+from skimage.filters import threshold_otsu, threshold_local
 from skimage.measure import label, regionprops
 import matplotlib.pyplot as plt
 
@@ -90,7 +90,7 @@ class ImageQualityAssessor:
         }
 
 
-class AdvancedImagePreprocessor:
+class ImagePreprocessor:
     """
     Advanced image preprocessing pipeline with specialized techniques
     for government documents and multilingual text.
