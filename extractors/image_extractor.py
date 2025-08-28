@@ -1,6 +1,6 @@
 # Images with OCR (Tesseract, OpenCV)
 """
-Advanced image text extraction using OCR with support for Arabic and French.
+Image text extraction using OCR with support for Arabic and French.
 Implements sophisticated preprocessing and multi-engine OCR for maximum accuracy.
 """
 
@@ -34,7 +34,7 @@ class OCRConfig:
 
 class ImageExtractor(BaseExtractor):
     """
-    Advanced image text extractor with multilingual OCR support.
+    image text extractor with multilingual OCR support.
     Optimized for French and Arabic text extraction.
     """
     
