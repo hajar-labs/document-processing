@@ -1,6 +1,6 @@
 # Text preprocessing and normalization
 """
-Advanced text preprocessing pipeline for multilingual documents.
+Text preprocessing pipeline for multilingual documents.
 Handles cleaning, normalization, segmentation, and quality assessment.
 """
 
