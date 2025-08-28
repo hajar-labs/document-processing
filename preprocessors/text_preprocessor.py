@@ -18,7 +18,8 @@ import string
 import numpy as np
 from collections import Counter, defaultdict
 import spacy
-from langdetect import detect, detect_langs, LangDetectError
+from langdetect import detect, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
 
 logger = logging.getLogger(__name__)
 
