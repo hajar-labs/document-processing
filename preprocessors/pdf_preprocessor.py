@@ -1,6 +1,6 @@
 # PDF preprocessing for enhanced text extraction
 """
-Advanced PDF preprocessing to optimize text extraction quality.
+PDF preprocessing to optimize text extraction quality.
 Handles complex layouts, multilingual content, and scanned documents.
 """
 
