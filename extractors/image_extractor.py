@@ -1,341 +1,249 @@
-# Images with OCR (Tesseract, OpenCV)
-"""
-Image text extraction using OCR with support for Arabic and French.
-Implements sophisticated preprocessing and multi-engine OCR for maximum accuracy.
-"""
-
 import cv2
 import numpy as np
+from PIL import Image, ImageEnhance
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
-import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Any, Tuple
 import re
-import concurrent.futures
-from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+import logging
 
-from .base_extractor import BaseExtractor, ExtractionResult, ExtractionStatus, DocumentType
-from preprocessors.image_preprocessor import ImagePreprocessor
-
+# Configuration de logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class OCRConfig:
-    """Configuration for OCR processing."""
-    languages: List[str]
-    psm: int  # Page segmentation mode
-    oem: int  # OCR Engine mode
-    config_string: str
-    confidence_threshold: float = 60.0
-
-
-
-class ImageExtractor(BaseExtractor):
-    """
-    image text extractor with multilingual OCR support.
-    Optimized for French and Arabic text extraction.
-    """
+class ImageExtractor:
+    """Extracteur de texte à partir d'images avec support français et arabe"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
-        
-        # Supported file types
-        self.supported_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif'}
-        self.supported_mime_types = {
-            'image/jpeg', 'image/jpg', 'image/png', 'image/bmp', 
-            'image/tiff', 'image/gif'
+    def __init__(self, config=None):
+        self.config = config or {}
+        # Configuration Tesseract pour français et arabe
+        self.tesseract_config = {
+            'french': '--oem 3 --psm 6 -l fra',
+            'arabic': '--oem 3 --psm 6 -l ara',
+            'mixed': '--oem 3 --psm 6 -l fra+ara'
         }
-        
-        # OCR configurations for different languages
-        self.ocr_configs = {
-            'french': OCRConfig(
-                languages=['fra'],
-                psm=3,  # Fully automatic page segmentation
-                oem=1,  # Neural nets LSTM engine
-                config_string='--psm 3 --oem 1 -c preserve_interword_spaces=1',
-                confidence_threshold=60.0
-            ),
-            'arabic': OCRConfig(
-                languages=['ara'],
-                psm=6,  # Single uniform block of text
-                oem=1,
-                config_string='--psm 6 --oem 1 -c preserve_interword_spaces=1',
-                confidence_threshold=50.0  # Lower threshold for Arabic due to complexity
-            ),
-            'multilingual': OCRConfig(
-                languages=['fra', 'ara', 'eng'],
-                psm=3,
-                oem=1,
-                config_string='--psm 3 --oem 1 -c preserve_interword_spaces=1',
-                confidence_threshold=55.0
-            )
-        }
-        
-        self.preprocessor = ImagePreprocessor()
-        self.default_config = self.config.get('default_ocr', 'multilingual')
-        self.enable_parallel_processing = self.config.get('parallel_processing', True)
-        self.max_image_size = self.config.get('max_image_size', (4000, 4000))
     
-    def _resize_image_if_needed(self, image: np.ndarray) -> np.ndarray:
-        """Resize image if it exceeds maximum dimensions."""
-        h, w = image.shape[:2]
-        max_h, max_w = self.max_image_size
-        
-        if h > max_h or w > max_w:
-            scale_factor = min(max_h / h, max_w / w)
-            new_h, new_w = int(h * scale_factor), int(w * scale_factor)
-            resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            logger.info(f"Resized image from {w}x{h} to {new_w}x{new_h}")
-            return resized
-        
-        return image
-    
-    def _extract_with_config(self, image: np.ndarray, config: OCRConfig) -> Tuple[str, float]:
-        """Extract text using specific OCR configuration."""
+    def detect_language(self, image: np.ndarray) -> str:
+        """Détecte la langue principale dans l'image"""
         try:
-            # Configure tesseract
-            lang_string = '+'.join(config.languages)
-            custom_config = config.config_string
+            # Test avec français
+            text_fr = pytesseract.image_to_string(image, config=self.tesseract_config['french'])
+            # Test avec arabe  
+            text_ar = pytesseract.image_to_string(image, config=self.tesseract_config['arabic'])
             
-            # Get OCR data with confidence scores
-            ocr_data = pytesseract.image_to_data(
-                image, 
-                lang=lang_string,
-                config=custom_config,
-                output_type=pytesseract.Output.DICT
-            )
+            # Compter les caractères français vs arabes
+            french_chars = len(re.findall(r'[a-zA-ZÀ-ÿ]', text_fr))
+            arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text_ar))
             
-            # Extract text with confidence filtering
-            text_parts = []
-            confidences = []
-            
-            for i in range(len(ocr_data['text'])):
-                word = ocr_data['text'][i].strip()
-                confidence = int(ocr_data['conf'][i])
-                
-                if word and confidence >= config.confidence_threshold:
-                    text_parts.append(word)
-                    confidences.append(confidence)
-            
-            text = ' '.join(text_parts)
-            avg_confidence = np.mean(confidences) if confidences else 0.0
-            
-            return text, avg_confidence
-            
+            if arabic_chars > french_chars:
+                return 'arabic'
+            elif french_chars > arabic_chars:
+                return 'french'
+            else:
+                return 'mixed'
         except Exception as e:
-            logger.error(f"OCR extraction failed with config {config.languages}: {e}")
-            return "", 0.0
+            logger.error(f"Erreur détection langue: {e}")
+            return 'mixed'
     
-    def _detect_text_language(self, text: str) -> str:
-        """Simple language detection based on character analysis."""
-        if not text:
-            return "unknown"
-        
-        # Count Arabic characters
-        arabic_chars = len(re.findall(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', text))
-        
-        # Count French/Latin characters
-        latin_chars = len(re.findall(r'[a-zA-ZàâäçéèêëïîôùûüÿñæœÀÂÄÇÉÈÊËÏÎÔÙÛÜŸÑÆŒ]', text))
-        
-        total_chars = len(re.findall(r'\S', text))  # Non-whitespace characters
-        
-        if total_chars == 0:
-            return "unknown"
-        
-        arabic_ratio = arabic_chars / total_chars
-        latin_ratio = latin_chars / total_chars
-        
-        if arabic_ratio > 0.3:
-            return "arabic"
-        elif latin_ratio > 0.5:
-            return "french"
-        else:
-            return "mixed"
-    
-    def extract(self, file_path: Union[str, Path]) -> ExtractionResult:
-        """
-        Extract text from image using advanced OCR with preprocessing.
-        
-        Args:
-            file_path: Path to the image file
-            
-        Returns:
-            ExtractionResult containing extracted text and metadata
-        """
+    def extract_text_from_image(self, image_path: str, language: Optional[str] = None) -> Dict:
+        """Extrait le texte d'une image avec détection automatique de langue"""
         try:
-            file_path = Path(file_path)
+            # Charger l'image
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Impossible de charger l'image: {image_path}")
             
-            # Preprocess image
-            processed_image = self.preprocessor.preprocess_image(file_path)
-            processed_image = self._resize_image_if_needed(processed_image)
+            # Préprocessing de base
+            processed_image = self._preprocess_image(image)
             
-            # Try different OCR configurations
-            best_text = ""
-            best_confidence = 0.0
-            best_config_name = "multilingual"
-            extraction_results = {}
+            # Détection de langue si non spécifiée
+            if language is None:
+                language = self.detect_language(processed_image)
             
-            if self.enable_parallel_processing:
-                # Parallel extraction with different configs
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    future_to_config = {
-                        executor.submit(self._extract_with_config, processed_image, config): name
-                        for name, config in self.ocr_configs.items()
-                    }
-                    
-                    for future in concurrent.futures.as_completed(future_to_config):
-                        config_name = future_to_config[future]
-                        try:
-                            text, confidence = future.result()
-                            extraction_results[config_name] = (text, confidence)
-                            
-                            if confidence > best_confidence and len(text.strip()) > 0:
-                                best_text = text
-                                best_confidence = confidence
-                                best_config_name = config_name
-                                
-                        except Exception as e:
-                            logger.error(f"OCR failed for config {config_name}: {e}")
-                            extraction_results[config_name] = ("", 0.0)
-            else:
-                # Sequential extraction
-                for config_name, config in self.ocr_configs.items():
-                    text, confidence = self._extract_with_config(processed_image, config)
-                    extraction_results[config_name] = (text, confidence)
-                    
-                    if confidence > best_confidence and len(text.strip()) > 0:
-                        best_text = text
-                        best_confidence = confidence
-                        best_config_name = config_name
+            # Extraction selon la langue
+            config = self.tesseract_config.get(language, self.tesseract_config['mixed'])
+            text = pytesseract.image_to_string(processed_image, config=config)
             
-            # Post-process text
-            cleaned_text = self._clean_extracted_text(best_text)
-            detected_language = self._detect_text_language(cleaned_text)
+            # Extraction des informations structurées
+            data = pytesseract.image_to_data(processed_image, config=config, output_type=pytesseract.Output.DICT)
             
-            # Determine extraction status
-            if best_confidence < 30:
-                status = ExtractionStatus.FAILED
-            elif best_confidence < 60:
-                status = ExtractionStatus.PARTIAL
-            else:
-                status = ExtractionStatus.SUCCESS
-            
-            # Create metadata
-            metadata = {
-                'ocr_confidence': round(best_confidence, 2),
-                'best_config': best_config_name,
-                'detected_language': detected_language,
-                'extraction_results': {
-                    name: {'confidence': round(conf, 2), 'text_length': len(text)}
-                    for name, (text, conf) in extraction_results.items()
-                },
-                'image_dimensions': processed_image.shape[:2],
-                'preprocessing_applied': True
+            return {
+                'text': text.strip(),
+                'language': language,
+                'confidence': self._calculate_confidence(data),
+                'word_count': len(text.split()),
+                'structured_data': data
             }
             
-            return ExtractionResult(
-                text=cleaned_text,
-                metadata=metadata,
-                status=status,
-                document_type=DocumentType.IMAGE,
-                language=detected_language,
-                confidence=best_confidence / 100.0  # Normalize to 0-1
-            )
-            
         except Exception as e:
-            logger.error(f"Image extraction failed for {file_path}: {e}")
-            return ExtractionResult(
-                text="",
-                metadata={'error': str(e)},
-                status=ExtractionStatus.FAILED,
-                document_type=DocumentType.IMAGE,
-                errors=[str(e)]
-            )
+            logger.error(f"Erreur extraction image {image_path}: {e}")
+            return {'text': '', 'language': 'unknown', 'confidence': 0, 'word_count': 0}
     
-    def _clean_extracted_text(self, text: str) -> str:
-        """Clean and normalize extracted text."""
-        if not text:
-            return ""
+    def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
+        """Préprocessing d'image pour améliorer l'OCR"""
+        # Conversion en niveaux de gris
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
         
-        # Remove excessive whitespace
-        cleaned = re.sub(r'\s+', ' ', text)
+        # Débruitage
+        denoised = cv2.fastNlMeansDenoising(gray)
         
-        # Remove isolated single characters (common OCR artifacts)
-        cleaned = re.sub(r'\b[a-zA-Z]\b', '', cleaned)
+        # Amélioration du contraste
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        contrast_enhanced = clahe.apply(denoised)
         
-        # Clean up punctuation spacing
-        cleaned = re.sub(r'\s+([.!?;:,])', r'\1', cleaned)
-        cleaned = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', cleaned)
+        # Seuillage adaptatif
+        thresh = cv2.adaptiveThreshold(
+            contrast_enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
         
-        # Remove lines with too few characters (likely artifacts)
-        lines = cleaned.split('\n')
-        filtered_lines = []
-        for line in lines:
-            line = line.strip()
-            if len(line) >= 3:  # Keep lines with at least 3 characters
-                filtered_lines.append(line)
-        
-        return '\n'.join(filtered_lines).strip()
+        return thresh
     
-    def extract_regions(self, file_path: Union[str, Path], 
-                       regions: List[Tuple[int, int, int, int]]) -> List[ExtractionResult]:
-        """
-        Extract text from specific regions of an image.
+    def _calculate_confidence(self, data: Dict) -> float:
+        """Calcule la confiance moyenne de l'OCR"""
+        confidences = [int(conf) for conf in data['conf'] if int(conf) > 0]
+        return sum(confidences) / len(confidences) if confidences else 0
+
+
+class ImagePreprocessor:
+    """Préprocesseur pour documents images français et arabes"""
+    
+    def __init__(self):
+        self.extractor = ImageExtractor()
         
-        Args:
-            file_path: Path to the image file
-            regions: List of (x, y, width, height) tuples defining regions
-            
-        Returns:
-            List of ExtractionResult for each region
-        """
+    def clean_french_text(self, text: str) -> str:
+        """Nettoyage spécifique au français"""
+        # Correction des caractères mal reconnus
+        replacements = {
+            'â': 'a', 'ä': 'a', 'à': 'a', 'á': 'a',
+            'ê': 'e', 'ë': 'e', 'è': 'e', 'é': 'e',
+            'î': 'i', 'ï': 'i', 'ì': 'i', 'í': 'i',
+            'ô': 'o', 'ö': 'o', 'ò': 'o', 'ó': 'o',
+            'û': 'u', 'ü': 'u', 'ù': 'u', 'ú': 'u',
+            'ç': 'c', 'ñ': 'n'
+        }
+        
+        cleaned_text = text
+        # Supprimer caractères non-français/non-arabes
+        cleaned_text = re.sub(r'[^\w\s\u0600-\u06FFÀ-ÿ.,;:!?()\-\'\"]+', ' ', cleaned_text)
+        
+        # Normaliser les espaces
+        cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+        
+        return cleaned_text.strip()
+    
+    def clean_arabic_text(self, text: str) -> str:
+        """Nettoyage spécifique à l'arabe"""
+        # Normalisation des caractères arabes
+        text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+        text = text.replace('ة', 'ه')
+        text = text.replace('ى', 'ي')
+        
+        # Supprimer les diacritiques
+        text = re.sub(r'[\u064B-\u0652\u0670\u0640]', '', text)
+        
+        # Nettoyer les caractères non-arabes (garder ponctuation de base)
+        text = re.sub(r'[^\u0600-\u06FF\w\s.,;:!?()\-\'\"]+', ' ', text)
+        
+        # Normaliser les espaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
+    
+    def normalize_text(self, text: str, language: str) -> str:
+        """Normalise le texte selon la langue"""
+        if language == 'arabic':
+            return self.clean_arabic_text(text)
+        elif language == 'french':
+            return self.clean_french_text(text)
+        else:
+            # Traitement mixte
+            text = self.clean_french_text(text)
+            text = self.clean_arabic_text(text)
+            return text
+    
+    def remove_noise(self, text: str) -> str:
+        """Supprime le bruit commun dans l'OCR"""
+        # Supprimer lignes très courtes (probablement du bruit)
+        lines = text.split('\n')
+        cleaned_lines = [line for line in lines if len(line.strip()) > 2]
+        
+        # Supprimer caractères isolés
+        text = ' '.join(cleaned_lines)
+        text = re.sub(r'\b\w\b', ' ', text)
+        
+        # Supprimer répétitions de caractères
+        text = re.sub(r'(.)\1{3,}', r'\1', text)
+        
+        return text
+    
+    def process_image(self, image_path: str, language: Optional[str] = None) -> Dict:
+        """Traite une image complète: extraction + préprocessing"""
+        logger.info(f"Traitement de l'image: {image_path}")
+        
+        # Extraction
+        extraction_result = self.extractor.extract_text_from_image(image_path, language)
+        
+        if not extraction_result['text']:
+            return extraction_result
+        
+        # Préprocessing
+        raw_text = extraction_result['text']
+        detected_language = extraction_result['language']
+        
+        # Nettoyage selon la langue
+        normalized_text = self.normalize_text(raw_text, detected_language)
+        denoised_text = self.remove_noise(normalized_text)
+        
+        # Segmentation en phrases
+        sentences = self._segment_sentences(denoised_text, detected_language)
+        
+        # Résultat final
+        result = {
+            'raw_text': raw_text,
+            'processed_text': denoised_text,
+            'language': detected_language,
+            'confidence': extraction_result['confidence'],
+            'word_count': len(denoised_text.split()),
+            'sentence_count': len(sentences),
+            'sentences': sentences,
+            'metadata': {
+                'source_type': 'image',
+                'source_path': image_path,
+                'processing_status': 'success' if denoised_text else 'failed'
+            }
+        }
+        
+        logger.info(f"Image traitée: {len(denoised_text)} caractères, {len(sentences)} phrases")
+        return result
+    
+    def _segment_sentences(self, text: str, language: str) -> List[str]:
+        """Segmente le texte en phrases selon la langue"""
+        if language == 'arabic':
+            # Segmentation pour l'arabe
+            sentences = re.split(r'[.!?؟।]+', text)
+        else:
+            # Segmentation pour le français
+            sentences = re.split(r'[.!?]+', text)
+        
+        # Nettoyer et filtrer
+        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
+        return sentences
+    
+    def batch_process(self, image_paths: List[str]) -> List[Dict]:
+        """Traite plusieurs images en lot"""
         results = []
-        
-        try:
-            # Load and preprocess full image
-            processed_image = self.preprocessor.preprocess_image(file_path)
-            
-            for i, (x, y, w, h) in enumerate(regions):
-                try:
-                    # Extract region
-                    region = processed_image[y:y+h, x:x+w]
-                    
-                    if region.size == 0:
-                        continue
-                    
-                    # Extract text from region
-                    text, confidence = self._extract_with_config(
-                        region, self.ocr_configs[self.default_config]
-                    )
-                    
-                    cleaned_text = self._clean_extracted_text(text)
-                    detected_language = self._detect_text_language(cleaned_text)
-                    
-                    status = ExtractionStatus.SUCCESS if confidence >= 50 else ExtractionStatus.PARTIAL
-                    
-                    result = ExtractionResult(
-                        text=cleaned_text,
-                        metadata={
-                            'region_index': i,
-                            'region_coordinates': (x, y, w, h),
-                            'ocr_confidence': round(confidence, 2),
-                            'detected_language': detected_language
-                        },
-                        status=status,
-                        document_type=DocumentType.IMAGE,
-                        language=detected_language,
-                        confidence=confidence / 100.0
-                    )
-                    
-                    results.append(result)
-                    
-                except Exception as e:
-                    logger.error(f"Region extraction failed for region {i}: {e}")
-                    continue
-                    
-        except Exception as e:
-            logger.error(f"Region-based extraction failed for {file_path}: {e}")
-        
+        for path in image_paths:
+            try:
+                result = self.process_image(path)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Erreur traitement {path}: {e}")
+                results.append({
+                    'processed_text': '',
+                    'language': 'unknown',
+                    'metadata': {'source_path': path, 'processing_status': 'failed', 'error': str(e)}
+                })
         return results
